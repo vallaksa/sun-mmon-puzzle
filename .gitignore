@@ -1,0 +1,29 @@
+# ─── Dependencies ────────────────────────────
+node_modules/
+
+# ─── Build Output ────────────────────────────
+dist/
+build/
+
+# ─── OS Artifacts ────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Editor / IDE ────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── Environment ─────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Logs ────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ─── TypeScript Cache ────────────────────────
+*.tsbuildinfo

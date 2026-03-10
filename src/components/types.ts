@@ -8,6 +8,12 @@ export type CellValue = "sun" | "moon" | null;
 /** Relationship type: "A" = same (=), "O" = opposite (×). */
 export type RelationshipType = "A" | "O";
 
+/** Supported grid dimensions. */
+export type GridSize = 4 | 6;
+
+/** Supported difficulty levels. */
+export type Difficulty = "easy" | "medium" | "hard";
+
 /** A constraint relationship between two adjacent cells. */
 export interface Relationship {
   cellA: string; // "row-col" format, e.g. "0-1"
@@ -20,7 +26,8 @@ export interface PuzzleLevel {
   level: number;
   rows: number;
   cols: number;
-  difficulty: "easy" | "medium" | "hard";
+  difficulty: Difficulty;
+  gridSize: GridSize;
   preFilledCells: Record<string, CellValue>;
   relationships: Relationship[];
   solution: CellValue[][];

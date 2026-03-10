@@ -1,18 +1,22 @@
 /**
  * puzzleLevels.ts
  *
- * Complete puzzle generation engine for the Sun & Moon puzzle.
- * Generates valid NxN grids (starting with 4×4) with:
- *  - Equal suns/moons per row and column
- *  - No more than 2 consecutive same symbols
- *  - Strategic relationship constraints (= / ×)
- *  - Verified logical solvability (no guessing needed)
+ * Puzzle generation engine for the Sun & Moon puzzle.
+ * Supports 4×4 and 6×6 grids with three difficulty tiers.
+ *
+ * Generation pipeline:
+ *  1. Build a valid solution via constrained backtracking
+ *  2. Derive relationship constraints from the solution
+ *  3. Remove cells iteratively, verifying logical solvability after each removal
+ *  4. Return a guaranteed-unique, deduction-only-solvable puzzle
  */
 
 // ─── Types ──────────────────────────────────────────────
 
 export type CellValue = "sun" | "moon" | null;
 export type RelationshipType = "A" | "O"; // "A" => same (=), "O" => opposite (×)
+export type GridSize = 4 | 6;
+export type Difficulty = "easy" | "medium" | "hard";
 
 export interface Relationship {
   cellA: string; // e.g. "0-1"
@@ -24,11 +28,37 @@ export interface PuzzleLevel {
   level: number;
   rows: number;
   cols: number;
-  difficulty: "easy" | "medium" | "hard";
+  difficulty: Difficulty;
+  gridSize: GridSize;
   preFilledCells: Record<string, CellValue>;
   relationships: Relationship[];
-  solution: CellValue[][]; // Keep solution for hint/validation
+  solution: CellValue[][];
 }
+
+// ─── Configuration ──────────────────────────────────────
+
+/**
+ * Tuning knobs per (gridSize, difficulty) combination.
+ *  - revealedCells: how many cells remain visible after blanking
+ *  - relationshipCount: how many = / × constraints to place
+ */
+interface DifficultyConfig {
+  revealedCells: number;
+  relationshipCount: number;
+}
+
+const CONFIG: Record<GridSize, Record<Difficulty, DifficultyConfig>> = {
+  4: {
+    easy: { revealedCells: 8, relationshipCount: 5 },
+    medium: { revealedCells: 6, relationshipCount: 4 },
+    hard: { revealedCells: 4, relationshipCount: 3 },
+  },
+  6: {
+    easy: { revealedCells: 18, relationshipCount: 8 },
+    medium: { revealedCells: 12, relationshipCount: 6 },
+    hard: { revealedCells: 8, relationshipCount: 4 },
+  },
+};
 
 // ─── Utility Helpers ────────────────────────────────────
 
@@ -54,10 +84,10 @@ function cellKey(r: number, c: number): string {
  *  - Exactly N/2 suns and N/2 moons in every row and column
  *  - No 3+ consecutive identical symbols in any row or column
  *
- * @param size - Grid dimension (must be even). Default: 4
+ * @param size - Grid dimension (must be even: 4 or 6)
  * @returns A fully-filled CellValue[][] grid
  */
-function generateSolution(size: number = 4): CellValue[][] {
+function generateSolution(size: GridSize): CellValue[][] {
   const half = size / 2;
   const grid: CellValue[][] = Array.from({ length: size }, () =>
     Array(size).fill(null)
@@ -67,24 +97,14 @@ function generateSolution(size: number = 4): CellValue[][] {
    * Checks whether placing `value` at (r, c) violates
    * the "no 3 consecutive" constraint.
    */
-  function isPlacementValid(
-    r: number,
-    c: number,
-    value: CellValue
-  ): boolean {
-    // Check horizontal: no 3 in a row
-    if (c >= 2 && grid[r][c - 1] === value && grid[r][c - 2] === value) {
-      return false;
-    }
-    // Check vertical: no 3 in a column
-    if (r >= 2 && grid[r - 1][c] === value && grid[r - 2][c] === value) {
-      return false;
-    }
+  function isPlacementValid(r: number, c: number, value: CellValue): boolean {
+    if (c >= 2 && grid[r][c - 1] === value && grid[r][c - 2] === value) return false;
+    if (r >= 2 && grid[r - 1][c] === value && grid[r - 2][c] === value) return false;
     return true;
   }
 
   /**
-   * Recursive backtracker that fills cells left-to-right, top-to-bottom.
+   * Recursive backtracker filling cells left-to-right, top-to-bottom.
    */
   function solve(pos: number): boolean {
     if (pos === size * size) return true;
@@ -103,15 +123,12 @@ function generateSolution(size: number = 4): CellValue[][] {
       else if (grid[i][c] === "moon") colMoon++;
     }
 
-    // Try both values in random order to produce varied puzzles
+    // Try both values in random order for variety
     const candidates: CellValue[] = shuffle(["sun", "moon"]);
 
     for (const val of candidates) {
-      // Balance check: can't exceed half for either symbol
       if (val === "sun" && (rowSun >= half || colSun >= half)) continue;
       if (val === "moon" && (rowMoon >= half || colMoon >= half)) continue;
-
-      // Adjacency check
       if (!isPlacementValid(r, c, val)) continue;
 
       grid[r][c] = val;
@@ -123,7 +140,7 @@ function generateSolution(size: number = 4): CellValue[][] {
   }
 
   if (!solve(0)) {
-    throw new Error("Failed to generate a valid solution");
+    throw new Error(`Failed to generate a valid ${size}×${size} solution`);
   }
 
   return grid;
@@ -133,10 +150,15 @@ function generateSolution(size: number = 4): CellValue[][] {
 
 /**
  * Attempts to solve the puzzle using only logical deduction (no guessing).
- * Returns the solved state if solvable, or null if stuck.
+ * Applies three rule categories iteratively until no further progress:
+ *  1. Relationship constraints (= and ×)
+ *  2. Row/column balance (if one symbol has reached its max, fill the rest)
+ *  3. No-three-consecutive gaps (e.g. sun-_-sun → middle must be moon)
+ *
+ * @returns The solved state if fully deducible, or null if stuck.
  */
 function solveByDeduction(
-  size: number,
+  size: GridSize,
   initial: Record<string, CellValue>,
   relationships: Relationship[]
 ): Record<string, CellValue> | null {
@@ -165,16 +187,17 @@ function solveByDeduction(
     for (let i = 0; i < size; i++) {
       // Row balance
       const rowKeys = Array.from({ length: size }, (_, c) => cellKey(i, c));
-      const rowVals = rowKeys.map((k) => state[k]);
-      const rowSun = rowVals.filter((v) => v === "sun").length;
-      const rowMoon = rowVals.filter((v) => v === "moon").length;
-
-      if (rowSun === half) {
+      let rSun = 0, rMoon = 0;
+      for (const k of rowKeys) {
+        if (state[k] === "sun") rSun++;
+        else if (state[k] === "moon") rMoon++;
+      }
+      if (rSun === half) {
         for (const k of rowKeys) {
           if (!state[k]) { state[k] = "moon"; madeProgress = true; }
         }
       }
-      if (rowMoon === half) {
+      if (rMoon === half) {
         for (const k of rowKeys) {
           if (!state[k]) { state[k] = "sun"; madeProgress = true; }
         }
@@ -182,16 +205,17 @@ function solveByDeduction(
 
       // Column balance
       const colKeys = Array.from({ length: size }, (_, r) => cellKey(r, i));
-      const colVals = colKeys.map((k) => state[k]);
-      const colSun = colVals.filter((v) => v === "sun").length;
-      const colMoon = colVals.filter((v) => v === "moon").length;
-
-      if (colSun === half) {
+      let cSun = 0, cMoon = 0;
+      for (const k of colKeys) {
+        if (state[k] === "sun") cSun++;
+        else if (state[k] === "moon") cMoon++;
+      }
+      if (cSun === half) {
         for (const k of colKeys) {
           if (!state[k]) { state[k] = "moon"; madeProgress = true; }
         }
       }
-      if (colMoon === half) {
+      if (cMoon === half) {
         for (const k of colKeys) {
           if (!state[k]) { state[k] = "sun"; madeProgress = true; }
         }
@@ -199,43 +223,36 @@ function solveByDeduction(
     }
 
     // ── Rule 3: No 3 consecutive — fill gaps ──
-    // If two same adjacent and the cell next to them is empty, fill opposite
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
         const val = state[cellKey(r, c)];
         if (!val) continue;
         const opposite: CellValue = val === "sun" ? "moon" : "sun";
 
-        // Horizontal: val val _ => _ must be opposite
+        // Horizontal: val val _ → _ must be opposite
         if (c < size - 2 && state[cellKey(r, c + 1)] === val && !state[cellKey(r, c + 2)]) {
-          state[cellKey(r, c + 2)] = opposite;
-          madeProgress = true;
+          state[cellKey(r, c + 2)] = opposite; madeProgress = true;
         }
-        // Horizontal: _ val val => _ must be opposite
+        // Horizontal: _ val val → _ must be opposite
         if (c >= 2 && state[cellKey(r, c - 1)] === val && !state[cellKey(r, c - 2)]) {
-          state[cellKey(r, c - 2)] = opposite;
-          madeProgress = true;
+          state[cellKey(r, c - 2)] = opposite; madeProgress = true;
         }
-        // Horizontal: val _ val => middle must be opposite
+        // Horizontal: val _ val → middle must be opposite
         if (c < size - 2 && !state[cellKey(r, c + 1)] && state[cellKey(r, c + 2)] === val) {
-          state[cellKey(r, c + 1)] = opposite;
-          madeProgress = true;
+          state[cellKey(r, c + 1)] = opposite; madeProgress = true;
         }
 
-        // Vertical: val val _ => _ must be opposite
+        // Vertical: val val _ → _ must be opposite
         if (r < size - 2 && state[cellKey(r + 1, c)] === val && !state[cellKey(r + 2, c)]) {
-          state[cellKey(r + 2, c)] = opposite;
-          madeProgress = true;
+          state[cellKey(r + 2, c)] = opposite; madeProgress = true;
         }
-        // Vertical: _ val val => _ must be opposite
+        // Vertical: _ val val → _ must be opposite
         if (r >= 2 && state[cellKey(r - 1, c)] === val && !state[cellKey(r - 2, c)]) {
-          state[cellKey(r - 2, c)] = opposite;
-          madeProgress = true;
+          state[cellKey(r - 2, c)] = opposite; madeProgress = true;
         }
-        // Vertical: val _ val => middle must be opposite
+        // Vertical: val _ val → middle must be opposite
         if (r < size - 2 && !state[cellKey(r + 1, c)] && state[cellKey(r + 2, c)] === val) {
-          state[cellKey(r + 1, c)] = opposite;
-          madeProgress = true;
+          state[cellKey(r + 1, c)] = opposite; madeProgress = true;
         }
       }
     }
@@ -253,62 +270,59 @@ function solveByDeduction(
 // ─── Puzzle Generator ───────────────────────────────────
 
 /**
- * Generates a complete puzzle:
- *  1. Creates a valid solution
- *  2. Adds relationship constraints between adjacent cells
- *  3. Removes cells one by one, verifying the puzzle remains
- *     logically solvable after each removal
+ * Generates a complete puzzle for the given grid size and difficulty.
  *
- * @param difficulty - Controls how many cells are revealed
+ * Pipeline:
+ *  1. Generate a valid NxN solution
+ *  2. Add relationship constraints (= and ×) between random adjacent pairs
+ *  3. Remove cells one-by-one, verifying the puzzle remains logically
+ *     solvable with a unique solution after each removal
+ *
+ * @param gridSize  - 4 or 6
+ * @param difficulty - easy, medium, or hard
+ * @returns A complete PuzzleLevel ready for gameplay
  */
 export function generatePuzzle(
-  difficulty: "easy" | "medium" | "hard" = "easy"
+  gridSize: GridSize = 4,
+  difficulty: Difficulty = "easy"
 ): PuzzleLevel {
-  const size = 4;
-  const solution = generateSolution(size);
+  const config = CONFIG[gridSize][difficulty];
+  const solution = generateSolution(gridSize);
 
   // ── Build relationship constraints ──
-  // Collect all adjacent pairs (horizontal + vertical)
   const adjacentPairs: Array<{ r1: number; c1: number; r2: number; c2: number }> = [];
-  for (let r = 0; r < size; r++) {
-    for (let c = 0; c < size; c++) {
-      if (c < size - 1) adjacentPairs.push({ r1: r, c1: c, r2: r, c2: c + 1 });
-      if (r < size - 1) adjacentPairs.push({ r1: r, c1: c, r2: r + 1, c2: c });
+  for (let r = 0; r < gridSize; r++) {
+    for (let c = 0; c < gridSize; c++) {
+      if (c < gridSize - 1) adjacentPairs.push({ r1: r, c1: c, r2: r, c2: c + 1 });
+      if (r < gridSize - 1) adjacentPairs.push({ r1: r, c1: c, r2: r + 1, c2: c });
     }
   }
 
-  // Pick a subset of relationships
-  const relationshipCount = difficulty === "easy" ? 5 : difficulty === "medium" ? 4 : 3;
   shuffle(adjacentPairs);
   const relationships: Relationship[] = adjacentPairs
-    .slice(0, relationshipCount)
-    .map(({ r1, c1, r2, c2 }) => {
-      const valA = solution[r1][c1];
-      const valB = solution[r2][c2];
-      return {
-        cellA: cellKey(r1, c1),
-        cellB: cellKey(r2, c2),
-        type: (valA === valB ? "A" : "O") as RelationshipType,
-      };
-    });
+    .slice(0, config.relationshipCount)
+    .map(({ r1, c1, r2, c2 }) => ({
+      cellA: cellKey(r1, c1),
+      cellB: cellKey(r2, c2),
+      type: (solution[r1][c1] === solution[r2][c2] ? "A" : "O") as RelationshipType,
+    }));
 
   // ── Initialize all cells as pre-filled ──
   const preFilledCells: Record<string, CellValue> = {};
-  for (let r = 0; r < size; r++) {
-    for (let c = 0; c < size; c++) {
+  for (let r = 0; r < gridSize; r++) {
+    for (let c = 0; c < gridSize; c++) {
       preFilledCells[cellKey(r, c)] = solution[r][c];
     }
   }
 
   // ── Remove cells while maintaining solvability ──
-  // How many to remove based on difficulty
-  const targetBlanks = difficulty === "easy" ? 8 : difficulty === "medium" ? 10 : 12;
+  const totalCells = gridSize * gridSize;
+  const targetBlanks = totalCells - config.revealedCells;
 
-  // Create a shuffled list of all cell positions
   const allPositions = shuffle(
-    Array.from({ length: size * size }, (_, i) => ({
-      r: Math.floor(i / size),
-      c: i % size,
+    Array.from({ length: totalCells }, (_, i) => ({
+      r: Math.floor(i / gridSize),
+      c: i % gridSize,
     }))
   );
 
@@ -320,17 +334,17 @@ export function generatePuzzle(
     const key = cellKey(r, c);
     const originalValue = preFilledCells[key];
 
-    // Tentatively remove this cell
+    // Tentatively remove
     preFilledCells[key] = null;
 
-    // Check if still solvable
-    const result = solveByDeduction(size, preFilledCells, relationships);
+    // Check if still solvable with unique solution
+    const result = solveByDeduction(gridSize, preFilledCells, relationships);
 
     if (result) {
-      // Verify solution matches original
+      // Verify the deduced solution matches the original
       let matchesSolution = true;
-      for (let rr = 0; rr < size; rr++) {
-        for (let cc = 0; cc < size; cc++) {
+      for (let rr = 0; rr < gridSize; rr++) {
+        for (let cc = 0; cc < gridSize; cc++) {
           if (result[cellKey(rr, cc)] !== solution[rr][cc]) {
             matchesSolution = false;
             break;
@@ -342,20 +356,19 @@ export function generatePuzzle(
       if (matchesSolution) {
         blanksCreated++;
       } else {
-        // Restore — different solution found, puzzle isn't unique
-        preFilledCells[key] = originalValue;
+        preFilledCells[key] = originalValue; // Different solution — restore
       }
     } else {
-      // Restore — puzzle isn't solvable without guessing
-      preFilledCells[key] = originalValue;
+      preFilledCells[key] = originalValue; // Not solvable — restore
     }
   }
 
   return {
     level: 1,
-    rows: size,
-    cols: size,
+    rows: gridSize,
+    cols: gridSize,
     difficulty,
+    gridSize,
     preFilledCells,
     relationships,
     solution,
@@ -366,10 +379,11 @@ export function generatePuzzle(
 
 /** Generates a fresh randomized puzzle. */
 export function getRandomizedPuzzle(
-  difficulty: "easy" | "medium" | "hard" = "easy"
+  gridSize: GridSize = 4,
+  difficulty: Difficulty = "easy"
 ): PuzzleLevel {
-  return generatePuzzle(difficulty);
+  return generatePuzzle(gridSize, difficulty);
 }
 
-const puzzleLevels: PuzzleLevel[] = [generatePuzzle("easy")];
+const puzzleLevels: PuzzleLevel[] = [generatePuzzle(4, "easy")];
 export default puzzleLevels;

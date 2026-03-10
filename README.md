@@ -4,6 +4,10 @@ A premium logic puzzle game built with **React**, **TypeScript**, and **Vite**. 
 
 ![Sun & Moon Puzzle](https://img.shields.io/badge/status-playable-brightgreen) ![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue) ![React](https://img.shields.io/badge/React-18.2-61dafb) ![Vite](https://img.shields.io/badge/Vite-4.5-646CFF)
 
+<p align="center">
+  <img src="assets/preview.png" alt="Sun & Moon Puzzle Preview" width="480" />
+</p>
+
 ---
 
 ## 🎮 How to Play
